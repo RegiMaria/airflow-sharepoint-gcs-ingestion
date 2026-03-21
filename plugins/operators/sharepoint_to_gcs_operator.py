@@ -6,7 +6,9 @@ Lê a lista de arquivos do XCom do sensor upstream e faz o upload.
 from __future__ import annotations
 
 import logging
+import os
 import smtplib
+import tempfile
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -61,6 +63,7 @@ class SharePointToGCSOperator(BaseOperator):
         preserve_folder_structure: bool = True,
         send_alert: bool = True,
         alert_email: str = "",
+        large_file_threshold_bytes: int = 100 * 1024 * 1024,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -73,6 +76,7 @@ class SharePointToGCSOperator(BaseOperator):
         self.preserve_folder_structure = preserve_folder_structure
         self.send_alert = send_alert
         self.alert_email = alert_email
+        self.large_file_threshold_bytes = large_file_threshold_bytes
 
     def execute(self, context: Context) -> list[str]:
         """Executa a transferência. Retorna lista de GCS objects criados."""
@@ -119,19 +123,30 @@ class SharePointToGCSOperator(BaseOperator):
             )
 
             try:
-                logger.info("Fazendo download: %s", file_name)
-                content: bytes = sp_hook.download_file(
-                    site_url=self.site_url,
-                    file_id=file_id,
-                )
+                file_size = file_meta.get("size", 0)
+                mime_type = self._guess_mime_type(file_name)
 
-                logger.info("Fazendo upload para gs://%s/%s", self.gcs_bucket, gcs_object)
-                gcs_hook.upload(
-                    bucket_name=self.gcs_bucket,
-                    object_name=gcs_object,
-                    data=content,
-                    mime_type=self._guess_mime_type(file_name),
-                )
+                if file_size >= self.large_file_threshold_bytes:
+                    logger.info(
+                        "Arquivo grande (%d bytes) — streaming para gs://%s/%s",
+                        file_size,
+                        self.gcs_bucket,
+                        gcs_object,
+                    )
+                    self._stream_upload(sp_hook, gcs_hook, file_id, gcs_object, mime_type)
+                else:
+                    logger.info("Fazendo download: %s", file_name)
+                    content: bytes = sp_hook.download_file(
+                        site_url=self.site_url,
+                        file_id=file_id,
+                    )
+                    logger.info("Fazendo upload para gs://%s/%s", self.gcs_bucket, gcs_object)
+                    gcs_hook.upload(
+                        bucket_name=self.gcs_bucket,
+                        object_name=gcs_object,
+                        data=content,
+                        mime_type=mime_type,
+                    )
 
                 uploaded.append(gcs_object)
                 logger.info("Upload concluído: %s", gcs_object)
@@ -166,6 +181,34 @@ class SharePointToGCSOperator(BaseOperator):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _stream_upload(
+        self,
+        sp_hook: SharePointHook,
+        gcs_hook: Any,
+        file_id: str,
+        gcs_object: str,
+        mime_type: str,
+    ) -> None:
+        """Faz download via streaming para arquivo temporário e envia ao GCS."""
+        tmp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False) as tmp:
+                for chunk in sp_hook.iter_file_chunks(
+                    site_url=self.site_url, file_id=file_id
+                ):
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            gcs_hook.upload(
+                bucket_name=self.gcs_bucket,
+                object_name=gcs_object,
+                filename=tmp_path,
+                mime_type=mime_type,
+            )
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     def _extract_relative_path(self, graph_path: str) -> str:
         """
