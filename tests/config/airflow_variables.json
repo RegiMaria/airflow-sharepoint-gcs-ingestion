@@ -1,0 +1,12 @@
+{
+  "sharepoint_site_url": "https://seudominio.sharepoint.com/sites/seu-site",
+  "sharepoint_folder_path": "/Shared Documents",
+  "sharepoint_sync_schedule": "*/30 * * * *",
+  "gcs_datalake_bucket": "nome-do-seu-bucket",
+  "gcs_destination_prefix": "raw/sharepoint",
+  "alert_email": "data-team@company.com",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": "587",
+  "smtp_user": "seu-email@gmail.com",
+  "smtp_password": "sua-senha-de-app"
+}
