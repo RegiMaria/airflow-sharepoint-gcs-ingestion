@@ -14,8 +14,8 @@ from airflow.models import Variable
 from airflow.operators.empty import EmptyOperator
 from airflow.utils.trigger_rule import TriggerRule
 
-from plugins.operators.sharepoint_to_gcs_operator import SharePointToGCSOperator
-from plugins.sensors.sharepoint_new_files_sensor import SharePointNewFilesSensor
+from operators.sharepoint_to_gcs_operator import SharePointToGCSOperator
+from sensors.sharepoint_new_files_sensor import SharePointNewFilesSensor
 
 logger = logging.getLogger(__name__)
 

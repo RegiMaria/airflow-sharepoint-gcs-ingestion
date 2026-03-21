@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from airflow.sensors.base import BaseSensorOperator
 from airflow.utils.context import Context
 
-from plugins.hooks.sharepoint_hook import SharePointHook
+from hooks.sharepoint_hook import SharePointHook
 
 logger = logging.getLogger(__name__)
 
