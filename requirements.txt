@@ -1,0 +1,27 @@
+# requirements.txt
+# Dependências do projeto SharePoint → GCS Airflow Pipeline
+
+# ---------------------------------------------------------------------------
+# Apache Airflow Providers
+# ---------------------------------------------------------------------------
+apache-airflow-providers-google==10.17.0          # GCS, BigQuery, etc.
+apache-airflow-providers-microsoft-azure==8.5.0   # (opcional) SharePoint via Azure
+
+# ---------------------------------------------------------------------------
+# Microsoft Graph API / SharePoint
+# ---------------------------------------------------------------------------
+msal==1.28.0                  # Microsoft Authentication Library (OAuth2)
+requests==2.32.3              # HTTP client para Graph API
+requests-toolbelt==1.0.0      # Multipart upload helper
+
+# ---------------------------------------------------------------------------
+# Google Cloud
+# ---------------------------------------------------------------------------
+google-cloud-storage==2.17.0  # GCS client
+google-auth==2.29.0           # Autenticação GCP
+
+# ---------------------------------------------------------------------------
+# Utilitários
+# ---------------------------------------------------------------------------
+python-dotenv==1.0.1          # Carrega variáveis de .env
+tenacity==8.3.0               # Retry com backoff exponencial

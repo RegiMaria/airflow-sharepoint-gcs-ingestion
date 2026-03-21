@@ -1,0 +1,33 @@
+# Ambiente
+.env
+*.env
+
+# Credenciais GCP — NUNCA commitar!
+config/gcp-service-account.json
+config/*.json
+!config/airflow_variables.json
+!config/airflow_connections.json
+
+# Logs do Airflow
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Testes
+.pytest_cache/
+.coverage
+htmlcov/
