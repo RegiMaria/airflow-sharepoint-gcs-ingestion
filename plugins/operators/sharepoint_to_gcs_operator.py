@@ -23,8 +23,8 @@ from airflow.models.baseoperator import BaseOperator
 from airflow.providers.google.cloud.hooks.gcs import GCSHook
 from airflow.utils.context import Context
 
-from plugins.hooks.sharepoint_hook import SharePointHook
-from plugins.sensors.sharepoint_new_files_sensor import XCOM_NEW_FILES_KEY
+from hooks.sharepoint_hook import SharePointHook
+from sensors.sharepoint_new_files_sensor import XCOM_NEW_FILES_KEY
 
 logger = logging.getLogger(__name__)
 
