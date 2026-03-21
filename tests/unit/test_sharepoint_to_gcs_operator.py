@@ -5,7 +5,9 @@ Cobre: execute, sanitização de paths, helpers de caminho, MIME type e envio de
 
 from __future__ import annotations
 
+import os
 import smtplib
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -194,6 +196,122 @@ class TestExecute:
         with patch.object(operator, "_send_alert_email") as mock_alert:
             operator.execute(_make_context())
             mock_alert.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# execute — arquivos grandes (streaming)
+# ---------------------------------------------------------------------------
+
+_LARGE_FILE_META = {
+    **_FILE_META,
+    "size": 150 * 1024 * 1024,  # 150 MB
+}
+
+
+class TestLargeFileStreaming:
+    @patch("plugins.operators.sharepoint_to_gcs_operator.SharePointHook")
+    @patch("plugins.operators.sharepoint_to_gcs_operator.GCSHook")
+    def test_large_file_uses_stream_upload_not_download_file(self, mock_gcs_cls, mock_sp_cls):
+        """Arquivos acima do threshold devem usar iter_file_chunks, não download_file."""
+        mock_sp = MagicMock()
+        mock_sp.iter_file_chunks.return_value = iter([b"chunk1", b"chunk2"])
+        mock_sp_cls.return_value = mock_sp
+        mock_gcs_cls.return_value = MagicMock()
+
+        operator = _make_operator(large_file_threshold_bytes=100 * 1024 * 1024)
+        operator.execute(_make_context(new_files=[_LARGE_FILE_META]))
+
+        mock_sp.iter_file_chunks.assert_called_once_with(
+            site_url="https://company.sharepoint.com/sites/data",
+            file_id="file-1",
+        )
+        mock_sp.download_file.assert_not_called()
+
+    @patch("plugins.operators.sharepoint_to_gcs_operator.SharePointHook")
+    @patch("plugins.operators.sharepoint_to_gcs_operator.GCSHook")
+    def test_large_file_upload_uses_filename_not_data(self, mock_gcs_cls, mock_sp_cls):
+        """Upload de arquivo grande deve usar filename= (temp file), não data=."""
+        mock_sp = MagicMock()
+        mock_sp.iter_file_chunks.return_value = iter([b"chunk"])
+        mock_sp_cls.return_value = mock_sp
+
+        mock_gcs = MagicMock()
+        mock_gcs_cls.return_value = mock_gcs
+
+        operator = _make_operator(large_file_threshold_bytes=100 * 1024 * 1024)
+        operator.execute(_make_context(new_files=[_LARGE_FILE_META]))
+
+        call_kwargs = mock_gcs.upload.call_args.kwargs
+        assert "filename" in call_kwargs
+        assert "data" not in call_kwargs
+
+    @patch("plugins.operators.sharepoint_to_gcs_operator.SharePointHook")
+    @patch("plugins.operators.sharepoint_to_gcs_operator.GCSHook")
+    def test_temp_file_is_removed_after_upload(self, mock_gcs_cls, mock_sp_cls):
+        """Arquivo temporário deve ser apagado após o upload."""
+        mock_sp = MagicMock()
+        mock_sp.iter_file_chunks.return_value = iter([b"data"])
+        mock_sp_cls.return_value = mock_sp
+        mock_gcs_cls.return_value = MagicMock()
+
+        created_tmp_paths: list[str] = []
+        real_ntf = tempfile.NamedTemporaryFile
+
+        def capturing_ntf(**kwargs):
+            f = real_ntf(**kwargs)
+            created_tmp_paths.append(f.name)
+            return f
+
+        operator = _make_operator(large_file_threshold_bytes=100 * 1024 * 1024)
+        with patch("plugins.operators.sharepoint_to_gcs_operator.tempfile.NamedTemporaryFile", side_effect=capturing_ntf):
+            operator.execute(_make_context(new_files=[_LARGE_FILE_META]))
+
+        assert created_tmp_paths, "Nenhum arquivo temporário foi criado"
+        for path in created_tmp_paths:
+            assert not os.path.exists(path), f"Arquivo temporário não foi apagado: {path}"
+
+    @patch("plugins.operators.sharepoint_to_gcs_operator.SharePointHook")
+    @patch("plugins.operators.sharepoint_to_gcs_operator.GCSHook")
+    def test_temp_file_removed_even_on_upload_failure(self, mock_gcs_cls, mock_sp_cls):
+        """Arquivo temporário deve ser apagado mesmo se o upload falhar."""
+        mock_sp = MagicMock()
+        mock_sp.iter_file_chunks.return_value = iter([b"data"])
+        mock_sp_cls.return_value = mock_sp
+
+        mock_gcs = MagicMock()
+        mock_gcs.upload.side_effect = Exception("GCS error")
+        mock_gcs_cls.return_value = mock_gcs
+
+        created_tmp_paths: list[str] = []
+        real_ntf = tempfile.NamedTemporaryFile
+
+        def capturing_ntf(**kwargs):
+            f = real_ntf(**kwargs)
+            created_tmp_paths.append(f.name)
+            return f
+
+        operator = _make_operator(large_file_threshold_bytes=100 * 1024 * 1024)
+        with patch("plugins.operators.sharepoint_to_gcs_operator.tempfile.NamedTemporaryFile", side_effect=capturing_ntf):
+            with pytest.raises(RuntimeError, match="Falha no upload"):
+                operator.execute(_make_context(new_files=[_LARGE_FILE_META]))
+
+        for path in created_tmp_paths:
+            assert not os.path.exists(path), f"Arquivo temporário não foi apagado: {path}"
+
+    @patch("plugins.operators.sharepoint_to_gcs_operator.SharePointHook")
+    @patch("plugins.operators.sharepoint_to_gcs_operator.GCSHook")
+    def test_small_file_still_uses_download_file(self, mock_gcs_cls, mock_sp_cls):
+        """Arquivos abaixo do threshold continuam usando o caminho in-memory."""
+        mock_sp = MagicMock()
+        mock_sp.download_file.return_value = b"small-data"
+        mock_sp_cls.return_value = mock_sp
+        mock_gcs_cls.return_value = MagicMock()
+
+        operator = _make_operator(large_file_threshold_bytes=100 * 1024 * 1024)
+        operator.execute(_make_context(new_files=[_FILE_META]))  # size=10240
+
+        mock_sp.download_file.assert_called_once()
+        mock_sp.iter_file_chunks.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
