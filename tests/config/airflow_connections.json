@@ -1,0 +1,21 @@
+[
+  {
+    "conn_id": "sharepoint_default",
+    "conn_type": "http",
+    "host": "https://graph.microsoft.com",
+    "login": "SEU_CLIENT_ID",
+    "password": "SEU_CLIENT_SECRET",
+    "extra": {
+      "tenant_id": "SEU_TENANT_ID",
+      "site_url": "https://seudominio.sharepoint.com/sites/seu-site"
+    }
+  },
+  {
+    "conn_id": "google_cloud_default",
+    "conn_type": "google_cloud_platform",
+    "extra": {
+      "project": "SEU_GCP_PROJECT_ID",
+      "key_path": "/opt/airflow/config/gcp-service-account.json"
+    }
+  }
+]
