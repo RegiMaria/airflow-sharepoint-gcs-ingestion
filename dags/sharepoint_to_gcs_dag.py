@@ -52,7 +52,7 @@ with DAG(
     default_args=DEFAULT_ARGS,
     description="Detecta e ingere novos documentos do SharePoint para o GCS",
     schedule_interval=SCHEDULE_INTERVAL,
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
     tags=["sharepoint", "gcs", "ingestion", "datalake"],
@@ -62,6 +62,7 @@ with DAG(
         "sharepoint_folder": SHAREPOINT_FOLDER,
         "gcs_bucket": GCS_BUCKET,
         "gcs_prefix": GCS_PREFIX,
+        "backfill_from": "2025-01-01T00:00:00+00:00",
     },
 ) as dag:
 
