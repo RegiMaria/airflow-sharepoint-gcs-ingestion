@@ -22,6 +22,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
     AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
     AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "30"
+    # Webserver — reduz workers e aumenta timeout para WSL
+    AIRFLOW__WEBSERVER__WORKERS: "2"
+    AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: "300"
     # Configurações de e-mail (SMTP)
     AIRFLOW__SMTP__SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
     AIRFLOW__SMTP__SMTP_STARTTLS: "True"
@@ -92,9 +95,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
 
   airflow-scheduler:
@@ -103,9 +106,9 @@ services:
     healthcheck:
       test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "$${HOSTNAME}"]
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
 
   airflow-worker:
@@ -119,9 +122,9 @@ services:
         - "CMD-SHELL"
         - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" -t 10'
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
 
   airflow-triggerer:
@@ -130,9 +133,9 @@ services:
     healthcheck:
       test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
       interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 120s
     restart: unless-stopped
 
   airflow-init:

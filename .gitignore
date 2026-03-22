@@ -31,3 +31,5 @@ venv/
 .pytest_cache/
 .coverage
 htmlcov/
+config/airflow_connections.json
+config/airflow_variables.json

@@ -135,7 +135,8 @@ class SharePointHook(BaseHook):
         folder = folder_path.strip("/")
         url = (
             f"{self.GRAPH_API_BASE}/drives/{drive_id}"
-            f"/root:/{folder}:/children"
+            # f"/root:/{folder}:/children"
+            f"/root/children" if not folder else f"/root:/{folder}:/children"
             "?$select=id,name,size,lastModifiedDateTime,file,parentReference"
             "&$top=999"
         )

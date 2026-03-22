@@ -49,12 +49,23 @@ class SharePointNewFilesSensor(BaseSensorOperator):
     def poke(self, context: Context) -> bool:
         """
         Verifica novos arquivos. Retorna True se encontrar algum.
-        A janela de tempo é baseada no data_interval_start do DAG run.
+
+        - Em execuções normais (schedule), usa data_interval_start como janela.
+        - Em triggers manuais com backfill_from, usa essa data para buscar
+          arquivos desde uma data específica (útil para carga inicial).
         """
         hook = SharePointHook(sharepoint_conn_id=self.sharepoint_conn_id)
 
-        # Janela: desde o início do intervalo atual de execução
-        modified_since: datetime = context["data_interval_start"]
+        # Janela normal: desde o início do intervalo atual de execução
+        # modified_since: datetime = context["data_interval_start"]
+
+        # Backfill: se informado via params, usa essa data como ponto de partida
+        # Útil para trigger manual que precisa buscar arquivos desde 2025-01-01
+        backfill_from = context["params"].get("backfill_from")
+        if backfill_from:
+            modified_since = datetime.fromisoformat(backfill_from)
+        else:
+            modified_since = context["data_interval_start"]
 
         logger.info(
             "Verificando arquivos em '%s' modificados após %s",
