@@ -25,3 +25,5 @@ google-auth==2.29.0           # Autenticação GCP
 # ---------------------------------------------------------------------------
 python-dotenv==1.0.1          # Carrega variáveis de .env
 tenacity==8.3.0               # Retry com backoff exponencial
+redis==4.6.0
+kombu==5.3.3

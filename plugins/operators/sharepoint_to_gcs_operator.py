@@ -34,9 +34,9 @@ class SharePointToGCSOperator(BaseOperator):
     Transfere arquivos do SharePoint para o Google Cloud Storage.
 
     - Lê lista de novos arquivos via XCom do sensor upstream.
+    - Verifica idempotência: pula arquivos que já existem no GCS.
     - Faz upload respeitando (ou não) a estrutura de pastas original.
     - Envia e-mail de alerta com o resumo dos arquivos ingeridos.
-    - Idempotente: registra arquivos já processados via Airflow Variable.
 
     Args:
         sharepoint_conn_id: Connection Airflow para o SharePoint.
@@ -48,6 +48,7 @@ class SharePointToGCSOperator(BaseOperator):
         preserve_folder_structure: Mantém estrutura de pastas do SharePoint no GCS.
         send_alert: Envia e-mail de notificação após a ingestão.
         alert_email: Destinatário(s) do alerta (separados por vírgula).
+        large_file_threshold_bytes: Tamanho a partir do qual usa streaming (padrão 100MB).
     """
 
     template_fields = ("site_url", "folder_path", "gcs_bucket", "gcs_prefix")
@@ -95,6 +96,7 @@ class SharePointToGCSOperator(BaseOperator):
         gcs_hook = GCSHook(gcp_conn_id=self.gcs_conn_id)
 
         uploaded: list[str] = []
+        skipped: list[str] = []
         failed: list[str] = []
 
         run_date = context["logical_date"].strftime("%Y/%m/%d")
@@ -122,6 +124,19 @@ class SharePointToGCSOperator(BaseOperator):
                 file_name=file_name,
             )
 
+            # ----------------------------------------------------------
+            # Idempotência: pula arquivos que já existem no GCS
+            # Evita duplicatas e não exige permissão de delete/replace
+            # ----------------------------------------------------------
+            if gcs_hook.exists(bucket_name=self.gcs_bucket, object_name=gcs_object):
+                logger.info(
+                    "Arquivo já existe no GCS, pulando: gs://%s/%s",
+                    self.gcs_bucket,
+                    gcs_object,
+                )
+                skipped.append(gcs_object)
+                continue
+
             try:
                 file_size = file_meta.get("size", 0)
                 mime_type = self._guess_mime_type(file_name)
@@ -140,7 +155,9 @@ class SharePointToGCSOperator(BaseOperator):
                         site_url=self.site_url,
                         file_id=file_id,
                     )
-                    logger.info("Fazendo upload para gs://%s/%s", self.gcs_bucket, gcs_object)
+                    logger.info(
+                        "Fazendo upload para gs://%s/%s", self.gcs_bucket, gcs_object
+                    )
                     gcs_hook.upload(
                         bucket_name=self.gcs_bucket,
                         object_name=gcs_object,
@@ -159,10 +176,19 @@ class SharePointToGCSOperator(BaseOperator):
                 logger.exception("Falha ao processar '%s': %s", file_name, exc)
                 failed.append(file_name)
 
+        # Resumo da execução
+        logger.info(
+            "Resumo: %d novo(s) | %d já existia(m) no GCS | %d falha(s).",
+            len(uploaded),
+            len(skipped),
+            len(failed),
+        )
+
         # Alerta de notificação
         if self.send_alert and (uploaded or failed):
             self._send_alert_email(
                 uploaded=uploaded,
+                skipped=skipped,
                 failed=failed,
                 run_date=run_date,
                 context=context,
@@ -213,18 +239,20 @@ class SharePointToGCSOperator(BaseOperator):
     def _extract_relative_path(self, graph_path: str) -> str:
         """
         Extrai caminho relativo a partir do parentReference.path do Graph API.
-        Exemplo: '/drives/xxx/root:/Shared Documents/2024/Janeiro'
-                  → '2024/Janeiro'
+        Exemplo: '/drives/xxx/root:/Receitas veganas/cafe-da-manha'
+                  → 'Receitas veganas/cafe-da-manha'
         """
         if not graph_path:
             return ""
-        # O caminho vem como /drives/<id>/root:/<folder>
         root_marker = "root:/"
         if root_marker in graph_path:
             after_root = graph_path.split(root_marker, 1)[1]
             base_folder = self.folder_path.strip("/")
             relative = after_root.replace(base_folder, "", 1).strip("/")
             return relative
+        # Raiz do drive — root: sem barra
+        if graph_path.endswith("/root:") or graph_path.endswith("/root"):
+            return ""
         return ""
 
     def _build_gcs_object_path(
@@ -244,75 +272,36 @@ class SharePointToGCSOperator(BaseOperator):
     @staticmethod
     def _sanitize_filename(name: str) -> str:
         """
-        Valida e sanitiza o nome de arquivo vindo do SharePoint antes de usá-lo
-        como componente de path no GCS.
-
-        Rejeita (lança ValueError) nomes que contenham:
-        - Bytes nulos
-        - Separadores de diretório embutidos (/ ou \\)
-        - Sequências de path traversal (..)
-
-        Args:
-            name: Nome de arquivo bruto do SharePoint.
-
-        Returns:
-            Nome sanitizado, pronto para uso como componente de path.
-
-        Raises:
-            ValueError: Se o nome for inválido ou potencialmente malicioso.
+        Valida e sanitiza o nome de arquivo vindo do SharePoint.
+        Rejeita nomes com bytes nulos, separadores de diretório ou path traversal.
         """
         if not name or not name.strip():
             raise ValueError("Nome de arquivo vazio ou só com espaços.")
-
         if "\x00" in name:
             raise ValueError(f"Nome contém byte nulo: {name!r}")
-
-        # Barras invertidas são separadores de diretório no Windows
         if "\\" in name or "/" in name:
             raise ValueError(
-                f"Nome de arquivo contém separador de diretório: {name!r}. "
-                "Apenas o nome do arquivo (sem caminho) é permitido."
+                f"Nome de arquivo contém separador de diretório: {name!r}."
             )
-
         if name.strip() in (".", ".."):
             raise ValueError(f"Nome de arquivo inválido: {name!r}")
-
         return name
 
     @staticmethod
     def _sanitize_relative_path(path: str) -> str:
         """
-        Valida e sanitiza o caminho relativo de pasta extraído do SharePoint.
-
-        Rejeita (lança ValueError) caminhos que contenham:
-        - Componentes '..' (path traversal)
-        - Bytes nulos
-
-        Args:
-            path: Caminho relativo já extraído (ex: '2024/Janeiro').
-
-        Returns:
-            Caminho sanitizado, ou string vazia para a raiz.
-
-        Raises:
-            ValueError: Se o caminho contiver tentativa de path traversal.
+        Valida e sanitiza o caminho relativo de pasta.
+        Rejeita path traversal e bytes nulos.
         """
         if not path:
             return ""
-
-        # Normaliza separadores (defensivo contra valores vindos via XCom)
         path = path.replace("\\", "/")
-
         components = [p for p in path.split("/") if p]
-
         for part in components:
             if "\x00" in part:
-                raise ValueError(f"Componente de caminho contém byte nulo: {part!r}")
+                raise ValueError(f"Componente contém byte nulo: {part!r}")
             if part == "..":
-                raise ValueError(
-                    f"Path traversal detectado no caminho de pasta: {path!r}"
-                )
-
+                raise ValueError(f"Path traversal detectado: {path!r}")
         return "/".join(components)
 
     @staticmethod
@@ -324,6 +313,7 @@ class SharePointToGCSOperator(BaseOperator):
     def _send_alert_email(
         self,
         uploaded: list[str],
+        skipped: list[str],
         failed: list[str],
         run_date: str,
         context: Context,
@@ -339,7 +329,7 @@ class SharePointToGCSOperator(BaseOperator):
         )
 
         body_lines = [
-            f"<h3>Ingestão SharePoint → GCS</h3>",
+            "<h3>Ingestão SharePoint → GCS</h3>",
             f"<b>DAG:</b> {dag_id}<br>",
             f"<b>Run ID:</b> {run_id}<br>",
             f"<b>Data:</b> {run_date}<br>",
@@ -347,13 +337,25 @@ class SharePointToGCSOperator(BaseOperator):
         ]
 
         if uploaded:
-            body_lines.append(f"<b>✅ {len(uploaded)} arquivo(s) ingerido(s) com sucesso:</b><ul>")
+            body_lines.append(
+                f"<b>✅ {len(uploaded)} arquivo(s) novo(s) ingerido(s):</b><ul>"
+            )
             for obj in uploaded:
                 body_lines.append(f"<li><code>{obj}</code></li>")
             body_lines.append("</ul>")
 
+        if skipped:
+            body_lines.append(
+                f"<b>⏭️ {len(skipped)} arquivo(s) já existiam no GCS (pulados):</b><ul>"
+            )
+            for obj in skipped:
+                body_lines.append(f"<li><code>{obj}</code></li>")
+            body_lines.append("</ul>")
+
         if failed:
-            body_lines.append(f"<b>❌ {len(failed)} arquivo(s) com falha:</b><ul>")
+            body_lines.append(
+                f"<b>❌ {len(failed)} arquivo(s) com falha:</b><ul>"
+            )
             for name in failed:
                 body_lines.append(f"<li><code>{name}</code></li>")
             body_lines.append("</ul>")
@@ -373,7 +375,9 @@ class SharePointToGCSOperator(BaseOperator):
             with smtplib.SMTP(smtp_host, smtp_port) as server:
                 server.starttls()
                 server.login(smtp_user, smtp_password)
-                server.sendmail(smtp_user, self.alert_email.split(","), msg.as_string())
+                server.sendmail(
+                    smtp_user, self.alert_email.split(","), msg.as_string()
+                )
 
             logger.info("E-mail de alerta enviado para %s.", self.alert_email)
 
