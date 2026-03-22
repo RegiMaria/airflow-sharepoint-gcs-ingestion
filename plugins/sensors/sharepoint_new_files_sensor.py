@@ -6,7 +6,7 @@ Usa XCom para passar a lista de arquivos detectados para o próximo task.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from airflow.sensors.base import BaseSensorOperator
 from airflow.utils.context import Context
