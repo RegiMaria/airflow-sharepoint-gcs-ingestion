@@ -6,7 +6,7 @@ Gerencia autenticação OAuth2 e operações de listagem/download de arquivos.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Generator
 
 import requests
@@ -80,7 +80,6 @@ class SharePointHook(BaseHook):
 
         self._token = result["access_token"]
         expires_in = result.get("expires_in", 3600)
-        from datetime import timedelta
         self._token_expiry = now + timedelta(seconds=expires_in - 60)
 
         logger.info("Token OAuth2 obtido com sucesso.")
@@ -112,19 +111,130 @@ class SharePointHook(BaseHook):
         response.raise_for_status()
         return response.json()["id"]
 
+    def _list_folder_contents(
+        self,
+        drive_id: str,
+        folder_path: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Lista o conteúdo (arquivos e subpastas) de uma pasta.
+        Trata paginação via @odata.nextLink automaticamente.
+
+        Args:
+            drive_id: ID do drive no SharePoint.
+            folder_path: Caminho relativo da pasta (vazio = raiz).
+
+        Returns:
+            Lista de itens (arquivos e pastas) da pasta.
+        """
+        folder = folder_path.strip("/")
+
+        # Raiz do drive usa endpoint diferente
+        if not folder:
+            base_url = f"{self.GRAPH_API_BASE}/drives/{drive_id}/root/children"
+        else:
+            base_url = f"{self.GRAPH_API_BASE}/drives/{drive_id}/root:/{folder}:/children"
+
+        url = (
+            base_url
+            + "?$select=id,name,size,lastModifiedDateTime,file,folder,parentReference"
+            + "&$top=999"
+        )
+
+        all_items: list[dict[str, Any]] = []
+
+        while url:
+            response = requests.get(url, headers=self._headers(), timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            all_items.extend(data.get("value", []))
+            url = data.get("@odata.nextLink")
+
+        return all_items
+
+    def _list_files_recursive(
+        self,
+        drive_id: str,
+        folder_path: str,
+        modified_since: datetime | None,
+        depth: int = 0,
+        max_depth: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Lista arquivos recursivamente a partir de uma pasta.
+
+        Entra em cada subpasta encontrada e coleta todos os arquivos,
+        preservando a estrutura de diretórios via parentReference.
+
+        Args:
+            drive_id: ID do drive.
+            folder_path: Pasta atual sendo processada.
+            modified_since: Filtra arquivos modificados após esta data.
+            depth: Profundidade atual da recursão (controle interno).
+            max_depth: Profundidade máxima para evitar recursão infinita.
+
+        Returns:
+            Lista de metadados de todos os arquivos encontrados.
+        """
+        if depth > max_depth:
+            logger.warning(
+                "Profundidade máxima (%d) atingida em '%s'. Ignorando subpastas.",
+                max_depth,
+                folder_path,
+            )
+            return []
+
+        all_files: list[dict[str, Any]] = []
+        items = self._list_folder_contents(drive_id, folder_path)
+
+        for item in items:
+            if "file" in item:
+                # É um arquivo — verifica filtro de data
+                if modified_since:
+                    item_modified = datetime.fromisoformat(
+                        item["lastModifiedDateTime"].replace("Z", "+00:00")
+                    )
+                    if item_modified <= modified_since:
+                        continue
+                all_files.append(item)
+
+            elif "folder" in item:
+                # É uma pasta — entra recursivamente
+                sub_folder = f"{folder_path}/{item['name']}".strip("/")
+                logger.info(
+                    "Entrando na subpasta '%s' (profundidade %d).",
+                    sub_folder,
+                    depth + 1,
+                )
+                sub_files = self._list_files_recursive(
+                    drive_id=drive_id,
+                    folder_path=sub_folder,
+                    modified_since=modified_since,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                )
+                all_files.extend(sub_files)
+
+        return all_files
+
     def list_files(
         self,
         site_url: str,
         folder_path: str,
         modified_since: datetime | None = None,
+        recursive: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Lista arquivos em uma pasta do SharePoint.
 
+        Por padrão faz listagem recursiva — entra em todas as subpastas.
+        Para listar apenas o nível raiz, use recursive=False.
+
         Args:
             site_url: URL do site SharePoint.
-            folder_path: Caminho relativo da pasta.
+            folder_path: Caminho relativo da pasta (vazio ou "" = raiz).
             modified_since: Filtra arquivos modificados após esta data.
+            recursive: Se True (padrão), lista subpastas recursivamente.
 
         Returns:
             Lista de metadados de arquivos.
@@ -132,39 +242,33 @@ class SharePointHook(BaseHook):
         site_id = self._get_site_id(site_url)
         drive_id = self._get_drive_id(site_id)
 
-        folder = folder_path.strip("/")
-        url = (
-            f"{self.GRAPH_API_BASE}/drives/{drive_id}"
-            # f"/root:/{folder}:/children"
-            f"/root/children" if not folder else f"/root:/{folder}:/children"
-            "?$select=id,name,size,lastModifiedDateTime,file,parentReference"
-            "&$top=999"
-        )
-
-        all_files: list[dict[str, Any]] = []
-
-        while url:
-            response = requests.get(url, headers=self._headers(), timeout=30)
-            response.raise_for_status()
-            data = response.json()
-
-            for item in data.get("value", []):
-                # Ignora pastas (sem a propriedade "file")
+        if recursive:
+            all_files = self._list_files_recursive(
+                drive_id=drive_id,
+                folder_path=folder_path,
+                modified_since=modified_since,
+            )
+        else:
+            # Listagem simples — apenas o nível informado (comportamento original)
+            all_files = []
+            items = self._list_folder_contents(drive_id, folder_path)
+            for item in items:
                 if "file" not in item:
                     continue
-
                 if modified_since:
                     item_modified = datetime.fromisoformat(
                         item["lastModifiedDateTime"].replace("Z", "+00:00")
                     )
                     if item_modified <= modified_since:
                         continue
-
                 all_files.append(item)
 
-            url = data.get("@odata.nextLink")
-
-        logger.info("Encontrados %d arquivo(s) em '%s'.", len(all_files), folder_path)
+        logger.info(
+            "Total: %d arquivo(s) encontrado(s) em '%s' (recursive=%s).",
+            len(all_files),
+            folder_path,
+            recursive,
+        )
         return all_files
 
     def download_file(self, site_url: str, file_id: str) -> bytes:
