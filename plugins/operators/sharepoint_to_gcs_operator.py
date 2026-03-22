@@ -9,10 +9,9 @@ import logging
 import os
 import smtplib
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from pathlib import PurePosixPath
 from typing import Any
 
 import requests.exceptions
